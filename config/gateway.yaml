@@ -1,0 +1,61 @@
+# LLM Gateway configuration. ${VARS} are expanded from the environment.
+
+providers:
+  anthropic:
+    type: anthropic          # reads ANTHROPIC_API_KEY (or an `ant auth login` profile)
+  bedrock:
+    type: bedrock
+    region: ${AWS_REGION:-us-east-1}
+  mock:                      # zero-dependency provider for local demos
+    type: mock
+    options:
+      latency_ms: 120
+
+# USD per million tokens. Claude API list prices; Bedrock is partner-priced, so
+# verify those rows against https://aws.amazon.com/bedrock/pricing/ before relying on them.
+pricing:
+  claude-opus-5-5:            { input_per_mtok: 4.00, output_per_mtok: 20.00 }
+  claude-sonnet-5-5:          { input_per_mtok: 2.00, output_per_mtok: 10.00 }
+  claude-haiku-4-5:           { input_per_mtok: 1.00, output_per_mtok: 5.00 }
+  anthropic.claude-opus-5-5:  { input_per_mtok: 4.00, output_per_mtok: 20.00 }
+  anthropic.claude-haiku-4-5: { input_per_mtok: 1.00, output_per_mtok: 5.00 }
+  mock-large:                 { input_per_mtok: 3.00, output_per_mtok: 15.00 }
+  mock-small:                 { input_per_mtok: 0.50, output_per_mtok: 2.50 }
+
+routes:
+  smart:                     # best quality, cross-cloud failover
+    strategy: fallback
+    targets: [anthropic/claude-opus-5-5, bedrock/anthropic.claude-opus-5-5]
+  balanced:
+    strategy: weighted       # 80/20 traffic split, e.g. for a canary
+    targets: [anthropic/claude-sonnet-5-5, anthropic/claude-opus-5-5]
+    weights: [0.8, 0.2]
+  fast:
+    strategy: latency        # whichever target is answering fastest right now
+    targets: [anthropic/claude-haiku-4-5, bedrock/anthropic.claude-haiku-4-5]
+  demo:
+    strategy: cost           # cheapest first; runs without any API key
+    targets: [mock/mock-large, mock/mock-small]
+
+tenants:
+  # Only SHA-256 hashes of keys are stored. Generate one with:
+  #   python -c "import hashlib,sys;print(hashlib.sha256(sys.argv[1].encode()).hexdigest())" <key>
+  - name: local-dev          # key: sk-gw-local-dev
+    api_key_sha256: 47cf04735515affbb183112a5df5a204b8434915974e5dd13bea1d9e7e7cfe22
+    admin: true
+    requests_per_minute: 120
+    tokens_per_minute: 500000
+
+cache:
+  enabled: true
+  ttl_seconds: 300
+  max_entries: 1000
+  redis_url: ${REDIS_URL:-}   # e.g. redis://localhost:6379/0; empty = in-memory LRU
+
+retry:
+  max_attempts_per_target: 2
+  backoff_base_seconds: 0.2
+
+circuit:
+  failure_threshold: 5
+  reset_timeout_seconds: 30

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM Gateway</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f7f7f5; --card:#fff; --ink:#1d1d1b; --muted:#6b6b66; --line:#e4e4df; --accent:#3d5afe; --bad:#d64545; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141413; --card:#1e1e1c; --ink:#ecece8; --muted:#9a9a93; --line:#2e2e2b; --accent:#8c9eff; --bad:#ff7b7b; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; gap:12px; align-items:center; padding:16px 24px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  h1 { font-size:16px; margin:0 auto 0 0; }
+  input, button { font:inherit; padding:6px 10px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--ink); }
+  button { cursor:pointer; }
+  main { padding:24px; display:grid; gap:16px; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .wide { grid-column:1 / -1; }
+  .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .value { font-size:26px; font-variant-numeric:tabular-nums; margin-top:4px; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; }
+  .err { color:var(--bad); }
+  .scroll { overflow-x:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>LLM Gateway · usage</h1>
+  <input id="key" type="password" placeholder="Admin API key" aria-label="Admin API key">
+  <button id="load">Connect</button>
+  <span id="status" class="label"></span>
+</header>
+<main>
+  <div class="card"><div class="label">Requests (60m)</div><div class="value" id="requests">–</div></div>
+  <div class="card"><div class="label">Spend (60m)</div><div class="value" id="cost">–</div></div>
+  <div class="card"><div class="label">Cache hit rate</div><div class="value" id="hit">–</div></div>
+  <div class="card"><div class="label">p50 / p95 latency</div><div class="value" id="lat">–</div></div>
+  <div class="card"><div class="label">Errors</div><div class="value" id="errors">–</div></div>
+  <div class="card wide"><div class="label">Requests per minute</div><canvas id="chart" height="90"></canvas></div>
+  <div class="card wide scroll"><div class="label">Spend by model</div><table id="models"></table></div>
+  <div class="card wide scroll"><div class="label">Recent requests</div><table id="recent"></table></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let chart, timer;
+try { $("key").value = sessionStorage.getItem("gwkey") || ""; } catch {}
+
+const usd = (n) => "$" + n.toFixed(n < 1 ? 4 : 2);
+const ms = (n) => n == null ? "–" : Math.round(n) + "ms";
+
+function table(el, headers, rows) {
+  el.innerHTML = "<tr>" + headers.map((h) => `<th>${h}</th>`).join("") + "</tr>" +
+    rows.map((r) => "<tr>" + r.map((c) => `<td>${c}</td>`).join("") + "</tr>").join("");
+}
+
+async function refresh() {
+  const key = $("key").value.trim();
+  const res = await fetch("/admin/usage", { headers: { Authorization: "Bearer " + key } });
+  if (!res.ok) { $("status").textContent = "HTTP " + res.status; return; }
+  $("status").textContent = "live · " + new Date().toLocaleTimeString();
+  const u = await res.json();
+  $("requests").textContent = u.requests;
+  $("cost").textContent = usd(u.cost_usd);
+  $("hit").textContent = (u.cache_hit_rate * 100).toFixed(0) + "%";
+  $("lat").textContent = ms(u.p50_latency_ms) + " / " + ms(u.p95_latency_ms);
+  $("errors").textContent = u.errors;
+
+  const labels = u.timeseries.map((p) => new Date(p.ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+  const data = u.timeseries.map((p) => p.requests);
+  if (!chart) {
+    const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent");
+    chart = new Chart($("chart"), { type: "bar", data: { labels, datasets: [{ label: "requests", data, backgroundColor: accent }] },
+      options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  } else { chart.data.labels = labels; chart.data.datasets[0].data = data; chart.update(); }
+
+  table($("models"), ["Model", "Requests", "Tokens", "Spend"],
+    Object.entries(u.by_model).map(([m, v]) => [m, v.requests, v.tokens.toLocaleString(), usd(v.cost_usd)]));
+  table($("recent"), ["Time", "Tenant", "Route", "Target", "Tokens in/out", "Latency", "Cost", "Status"],
+    u.recent.map((r) => [new Date(r.ts * 1000).toLocaleTimeString(), r.tenant, r.route, `${r.provider}/${r.model}`,
+      `${r.input_tokens}/${r.output_tokens}`, r.cached ? "cache" : ms(r.latency_ms), usd(r.cost_usd),
+      r.status === "ok" ? "ok" : `<span class="err">${r.status}</span>`]));
+}
+
+$("load").onclick = () => {
+  try { sessionStorage.setItem("gwkey", $("key").value.trim()); } catch {}
+  clearInterval(timer); refresh(); timer = setInterval(refresh, 5000);
+};
+</script>
+</body>
+</html>

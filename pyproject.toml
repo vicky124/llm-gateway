@@ -1,0 +1,36 @@
+[project]
+name = "llm-gateway"
+version = "0.1.0"
+description = "Multi-provider LLM gateway with routing, fallbacks, caching, rate limits and cost tracking"
+requires-python = ">=3.11"
+dependencies = [
+  "anthropic>=1.11,<2",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pyyaml>=6",
+  "prometheus-client>=0.20",
+]
+
+[project.optional-dependencies]
+redis = ["redis>=5"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "httpx>=0.27", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["gateway*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["B008"]  # FastAPI's Depends() in defaults is idiomatic
